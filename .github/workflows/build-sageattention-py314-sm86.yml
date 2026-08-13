@@ -158,6 +158,16 @@ jobs:
     # -----------------------------
     # Build wheel
     # -----------------------------
+    - name: Verify exact PyTorch build
+      run: |
+        python - <<'PY'
+        import torch
+        print("torch:", torch.__version__)
+        print("cuda:", torch.version.cuda)
+        print("git:", torch.version.git_version)
+        print("cxx11 abi:", torch._C._GLIBCXX_USE_CXX11_ABI)
+        print("torch path:", torch.__file__)
+        PY
     - name: Build wheel
       run: |
 
