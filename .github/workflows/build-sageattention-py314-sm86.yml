@@ -12,37 +12,38 @@ permissions:
   contents: write
 
 env:
-  # Match local environment as closely as possible
   PYTHON_VERSION: "3.14.6"
 
   TORCH_VERSION: "2.13.0"
   TORCH_FULL_VERSION: "2.13.0+cu130"
+
   TORCH_GIT_VERSION: "cf30153c4c131c8164ee7798e5022d810682e2cb"
 
   CUDA_VERSION: "13.0"
   CUDA_HOME: "/usr/local/cuda-13.0"
 
-  TRITON_VERSION: "3.7.1"
-
-  # RTX 3080 Ti = compute capability 8.6
+  # RTX 3080 Ti
   TORCH_CUDA_ARCH_LIST: "8.6"
 
   MAX_JOBS: "4"
+
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      # -------------------------------------------------
-      # Checkout workflow repository
-      # -------------------------------------------------
+
+      # =================================================
+      # Checkout
+      # =================================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # -------------------------------------------------
+
+      # =================================================
       # Free disk
-      # -------------------------------------------------
+      # =================================================
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet || true
@@ -53,32 +54,40 @@ jobs:
           echo "=== Disk ==="
           df -h
 
-      # -------------------------------------------------
+
+      # =================================================
       # Python 3.14.6
-      # -------------------------------------------------
+      # =================================================
       - name: Setup Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           architecture: "x64"
 
+
       - name: Verify Python
         run: |
           echo "=== Python ==="
+
           which python
           python --version
+
           python - <<'PY'
           import sys
+
           print("sys.version:", sys.version)
           print("executable:", sys.executable)
 
           assert sys.version_info[:3] == (3, 14, 6), \
               f"Expected Python 3.14.6, got {sys.version}"
+
+          print("Python version OK")
           PY
 
-      # -------------------------------------------------
+
+      # =================================================
       # CUDA Toolkit 13.0
-      # -------------------------------------------------
+      # =================================================
       - name: Install CUDA Toolkit 13.0
         run: |
           wget -q \
@@ -92,14 +101,17 @@ jobs:
             cuda-toolkit-13-0
 
           echo "CUDA_HOME=${CUDA_HOME}" >> "$GITHUB_ENV"
+
           echo "${CUDA_HOME}/bin" >> "$GITHUB_PATH"
 
           echo "LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH:-}" \
             >> "$GITHUB_ENV"
 
+
       - name: Verify CUDA compiler
         run: |
           echo "=== CUDA ==="
+
           which nvcc
           nvcc --version
 
@@ -112,11 +124,17 @@ jobs:
 
           echo "Detected nvcc release: ${NVCC_RELEASE}"
 
-          test "${NVCC_RELEASE}" = "13.0"
+          if [ "${NVCC_RELEASE}" != "13.0" ]; then
+            echo "ERROR: expected nvcc 13.0"
+            exit 1
+          fi
 
-      # -------------------------------------------------
-      # Build toolchain
-      # -------------------------------------------------
+          echo "CUDA compiler OK"
+
+
+      # =================================================
+      # System build tools
+      # =================================================
       - name: Install build toolchain
         run: |
           sudo apt-get update
@@ -130,76 +148,85 @@ jobs:
 
           echo "=== GCC ==="
           gcc --version | head -1
+
+          echo "=== G++ ==="
           g++ --version | head -1
 
-      # -------------------------------------------------
+
+      # =================================================
       # Python build dependencies
-      # -------------------------------------------------
+      # =================================================
       - name: Install Python build dependencies
         run: |
           python -m pip install --upgrade pip
 
           python -m pip install \
             numpy \
-            wheel \
             setuptools \
+            wheel \
             ninja \
             packaging \
             cmake
 
-      # -------------------------------------------------
-      # PyTorch 2.13.0+cu130
-      # -------------------------------------------------
-      - name: Install PyTorch
+
+      # =================================================
+      # PyTorch
+      #
+      # IMPORTANT:
+      # Do NOT manually install Triton.
+      # Let PyTorch install its required Triton version.
+      # =================================================
+      - name: Install PyTorch 2.13.0 cu130
         run: |
           python -m pip install \
             "torch==${TORCH_VERSION}" \
             --index-url https://download.pytorch.org/whl/cu130
 
-      # -------------------------------------------------
-      # Triton 3.7.1
-      # -------------------------------------------------
-      - name: Install Triton
-        run: |
-          python -m pip install \
-            "triton==${TRITON_VERSION}"
 
-      # -------------------------------------------------
-      # Verify exact Torch ABI
-      # -------------------------------------------------
-      - name: Verify exact PyTorch build
+      # =================================================
+      # Verify Torch + Triton
+      # =================================================
+      - name: Verify exact PyTorch and Triton build
         run: |
           python - <<'PY'
           import sys
           import torch
           import triton
+          import triton.language as tl
 
-          print("=== Exact build environment ===")
+          print("=== Runtime environment ===")
+
           print("python:", sys.version)
+
           print("torch:", torch.__version__)
           print("torch cuda:", torch.version.cuda)
           print("torch git:", torch.version.git_version)
+
           print(
               "cxx11 abi:",
               torch._C._GLIBCXX_USE_CXX11_ABI
           )
+
           print("torch path:", torch.__file__)
+
           print("triton:", triton.__version__)
+          print("triton file:", triton.__file__)
+          print("triton.language:", tl.__file__)
 
           assert torch.__version__ == "2.13.0+cu130", (
-              "Unexpected torch version: "
+              "Unexpected Torch version: "
               + torch.__version__
           )
 
           assert torch.version.cuda == "13.0", (
-              "Unexpected torch CUDA: "
+              "Unexpected Torch CUDA version: "
               + str(torch.version.cuda)
           )
 
           assert torch.version.git_version == (
               "cf30153c4c131c8164ee7798e5022d810682e2cb"
           ), (
-              "Unexpected Torch git commit: "
+              "Unexpected Torch git version: "
               + str(torch.version.git_version)
           )
 
@@ -207,18 +234,42 @@ jobs:
               "CXX11 ABI mismatch"
           )
 
+          # Torch 2.13.0+cu130 should bring Triton 3.7.1
           assert triton.__version__ == "3.7.1", (
-              "Unexpected Triton: "
+              "Unexpected Triton version: "
               + triton.__version__
           )
 
+          assert "/sageattention/triton/" not in (
+              triton.__file__ or ""
+          ), (
+              "Wrong Triton imported from sageattention/triton"
+          )
+
           print("")
-          print("Environment check PASSED")
+          print("Torch + Triton environment PASSED")
           PY
 
-      # -------------------------------------------------
+
+      # =================================================
+      # pip consistency check
+      # =================================================
+      - name: Check Python package dependencies
+        run: |
+          python -m pip check
+
+          echo ""
+          echo "=== Torch ==="
+          python -m pip show torch
+
+          echo ""
+          echo "=== Triton ==="
+          python -m pip show triton
+
+
+      # =================================================
       # Clone SageAttention
-      # -------------------------------------------------
+      # =================================================
       - name: Clone SageAttention
         run: |
           git clone \
@@ -234,12 +285,14 @@ jobs:
             --init \
             --recursive
 
+          echo ""
           echo "=== SageAttention commit ==="
           git rev-parse HEAD
 
-      # -------------------------------------------------
-      # Clean absolutely everything before build
-      # -------------------------------------------------
+
+      # =================================================
+      # Clean build
+      # =================================================
       - name: Clean SageAttention build
         run: |
           cd SageAttention
@@ -264,9 +317,10 @@ jobs:
             -prune \
             -exec rm -rf {} +
 
-          echo "=== After cleanup ==="
+          echo "=== Native files remaining after clean ==="
+
           find . \
-            -maxdepth 3 \
+            -maxdepth 4 \
             -type f \
             \( \
               -name "*.so" \
@@ -274,17 +328,24 @@ jobs:
             \) \
             -print
 
-      # -------------------------------------------------
-      # Build environment diagnostics
-      # -------------------------------------------------
+
+      # =================================================
+      # Build environment
+      # =================================================
       - name: Show final build environment
         run: |
-          echo "=== PATH ==="
-          echo "$PATH"
+          echo "=================================="
+          echo "BUILD ENVIRONMENT"
+          echo "=================================="
+
+          echo ""
+          echo "=== Python ==="
+          which python
+          python --version
 
           echo ""
           echo "=== CUDA ==="
-          echo "CUDA_HOME=$CUDA_HOME"
+          echo "CUDA_HOME=${CUDA_HOME}"
           which nvcc
           nvcc --version
 
@@ -296,33 +357,31 @@ jobs:
           g++ --version | head -1
 
           echo ""
-          echo "=== Python ==="
-          which python
-          python --version
+          echo "=== Torch/Triton ==="
 
-          echo ""
-          echo "=== Packages ==="
-          python -m pip show \
-            torch \
-            triton \
-            setuptools \
-            wheel \
-            ninja
+          python - <<'PY'
+          import torch
+          import triton
+          import triton.language as tl
 
-      # -------------------------------------------------
-      # Build SageAttention wheel
-      # -------------------------------------------------
-      - name: Remove bundled SageAttention Triton
-        run: |
-          cd SageAttention
-      
-          echo "Before:"
-          find sageattention -maxdepth 2 -type d -name "triton" -print
-      
-          rm -rf sageattention/triton
-      
-          echo "After:"
-          find sageattention -maxdepth 2 -type d -name "triton" -print
+          print("torch:", torch.__version__)
+          print("torch cuda:", torch.version.cuda)
+          print("torch git:", torch.version.git_version)
+
+          print(
+              "cxx11 abi:",
+              torch._C._GLIBCXX_USE_CXX11_ABI
+          )
+
+          print("triton:", triton.__version__)
+          print("triton file:", triton.__file__)
+          print("tl file:", tl.__file__)
+          PY
+
+
+      # =================================================
+      # Build wheel
+      # =================================================
       - name: Build SageAttention wheel
         env:
           CUDA_HOME: /usr/local/cuda-13.0
@@ -334,31 +393,37 @@ jobs:
         run: |
           cd SageAttention
 
-          echo "TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}"
           echo "CUDA_HOME=${CUDA_HOME}"
+          echo "TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}"
+          echo "MAX_JOBS=${MAX_JOBS}"
 
           python setup.py bdist_wheel
 
-      # -------------------------------------------------
-      # Inspect generated wheel
-      # -------------------------------------------------
+
+      # =================================================
+      # Inspect wheel
+      # =================================================
       - name: Inspect wheel contents
         run: |
-          echo "=== Wheel files ==="
+          echo "=== Wheel ==="
+
           ls -lh SageAttention/dist/
 
           echo ""
-          echo "=== Native modules ==="
+          echo "=== Native objects ==="
+
           unzip -l \
             SageAttention/dist/*.whl |
-            grep -E '\.so|qattn|fused' || true
+            grep -E '\.so|qattn|fused|triton' || true
 
-      # -------------------------------------------------
-      # Extract wheel for ELF inspection
-      # -------------------------------------------------
-      - name: Inspect native ELF dependencies
+
+      # =================================================
+      # Extract wheel
+      # =================================================
+      - name: Extract wheel for ELF inspection
         run: |
           rm -rf /tmp/sage-wheel-check
+
           mkdir -p /tmp/sage-wheel-check
 
           unzip -q \
@@ -372,9 +437,12 @@ jobs:
             -name "*.so" \
             -print
 
-          echo ""
-          echo "=== _fused dependencies ==="
 
+      # =================================================
+      # Inspect _fused.so
+      # =================================================
+      - name: Inspect _fused native library
+        run: |
           FUSED=$(
             find /tmp/sage-wheel-check \
               -type f \
@@ -382,31 +450,35 @@ jobs:
               head -1
           )
 
-          if [ -z "$FUSED" ]; then
-            echo "_fused.so not found"
+          if [ -z "${FUSED}" ]; then
+            echo "ERROR: _fused.so not found"
             exit 1
           fi
 
-          echo "FUSED=$FUSED"
+          echo "_fused path:"
+          echo "${FUSED}"
 
           echo ""
-          echo "--- ldd ---"
-          ldd "$FUSED" || true
+          echo "=== ldd ==="
+          ldd "${FUSED}" || true
 
           echo ""
-          echo "--- RPATH/RUNPATH ---"
-          readelf -d "$FUSED" |
+          echo "=== RPATH/RUNPATH/NEEDED ==="
+
+          readelf -d "${FUSED}" |
             grep -E 'RPATH|RUNPATH|NEEDED' || true
 
           echo ""
-          echo "--- materialize_cow_storage reference ---"
-          nm -D "$FUSED" |
+          echo "=== COW symbol reference ==="
+
+          nm -D "${FUSED}" |
             c++filt |
             grep "materialize_cow_storage" || true
 
-      # -------------------------------------------------
-      # Check Torch itself for the symbol
-      # -------------------------------------------------
+
+      # =================================================
+      # Check Torch symbol
+      # =================================================
       - name: Check Torch COW symbol
         run: |
           TORCH_LIB=$(
@@ -418,26 +490,27 @@ jobs:
               os.path.join(
                   os.path.dirname(torch.__file__),
                   "lib",
-                  "libtorch_cpu.so",
+                  "libtorch_cpu.so"
               )
           )
           PY
           )
 
           echo "Torch lib:"
-          echo "$TORCH_LIB"
+          echo "${TORCH_LIB}"
 
           echo ""
-          echo "=== Search materialize_cow_storage ==="
+          echo "=== Search COW symbol ==="
 
-          nm -D "$TORCH_LIB" |
+          nm -D "${TORCH_LIB}" |
             c++filt |
             grep "materialize_cow_storage" || true
 
-      # -------------------------------------------------
-      # IMPORTANT:
-      # Test wheel outside source tree
-      # -------------------------------------------------
+
+      # =================================================
+      # IMPORTANT
+      # Install wheel from clean directory
+      # =================================================
       - name: Test wheel in clean directory
         run: |
           cd /tmp
@@ -451,22 +524,37 @@ jobs:
             "$GITHUB_WORKSPACE"/SageAttention/dist/*.whl
 
           echo ""
-          echo "=== Import test ==="
+          echo "=================================="
+          echo "CLEAN WHEEL IMPORT TEST"
+          echo "=================================="
 
           python - <<'PY'
           import sys
           import torch
           import triton
+          import triton.language as tl
 
           print("python:", sys.version)
+
           print("torch:", torch.__version__)
           print("torch cuda:", torch.version.cuda)
           print("torch git:", torch.version.git_version)
+
           print(
               "cxx11 abi:",
               torch._C._GLIBCXX_USE_CXX11_ABI
           )
+
           print("triton:", triton.__version__)
+          print("triton file:", triton.__file__)
+          print("triton.language:", tl.__file__)
+
+          assert "/sageattention/triton/" not in (
+              triton.__file__ or ""
+          ), (
+              "ERROR: SageAttention internal Triton "
+              "was imported as top-level triton"
+          )
 
           print("")
           print("Import sageattention...")
@@ -493,13 +581,45 @@ jobs:
 
           from sageattention import sageattn
 
-          print("sageattn import SUCCESS")
+          print("")
+          print("SageAttention import SUCCESS")
           PY
 
-      # -------------------------------------------------
-      # Check installed .so links to current Torch
-      # -------------------------------------------------
-      - name: Verify installed wheel linkage
+
+      # =================================================
+      # Verify Sage sm86 path
+      # =================================================
+      - name: Verify SageAttention sm86 implementation
+        run: |
+          cd /tmp
+
+          python - <<'PY'
+          import inspect
+
+          from sageattention import sageattn
+
+          source = inspect.getsource(sageattn)
+
+          print(source)
+
+          assert 'arch == "sm86"' in source
+
+          assert (
+              "sageattn_qk_int8_pv_fp16_triton"
+              in source
+          )
+
+          print("")
+          print(
+              "sm86 -> Triton implementation confirmed"
+          )
+          PY
+
+
+      # =================================================
+      # Verify installed wheel linkage
+      # =================================================
+      - name: Verify installed native linkage
         run: |
           cd /tmp
 
@@ -512,53 +632,57 @@ jobs:
               sageattention.__file__
           )
 
-          files = [
+          candidates = [
               os.path.join(root, f)
               for f in os.listdir(root)
               if f.startswith("_fused")
               and f.endswith(".so")
           ]
 
-          print(files[0])
+          print(candidates[0])
           PY
           )
 
           echo "Installed _fused:"
-          echo "$SO"
+          echo "${SO}"
 
           echo ""
-          echo "=== ldd ==="
+          echo "=== Linked libraries ==="
 
-          ldd "$SO" |
+          ldd "${SO}" |
             grep -E \
               'torch|c10|cuda|stdc\+\+' || true
 
           echo ""
           echo "=== RPATH/RUNPATH ==="
 
-          readelf -d "$SO" |
+          readelf -d "${SO}" |
             grep -E 'RPATH|RUNPATH' || true
 
-      # -------------------------------------------------
-      # Get wheel metadata
-      # -------------------------------------------------
+
+      # =================================================
+      # Get wheel name
+      # =================================================
       - name: Get wheel name
         id: wheel
         run: |
           FILE=$(ls SageAttention/dist/*.whl)
-          NAME=$(basename "$FILE")
 
-          echo "file=$FILE" \
+          NAME=$(basename "${FILE}")
+
+          echo "file=${FILE}" \
             >> "$GITHUB_OUTPUT"
 
-          echo "name=$NAME" \
+          echo "name=${NAME}" \
             >> "$GITHUB_OUTPUT"
 
-          echo "Wheel: $NAME"
+          echo "Wheel:"
+          echo "${NAME}"
 
-      # -------------------------------------------------
-      # Artifact
-      # -------------------------------------------------
+
+      # =================================================
+      # Upload artifact
+      # =================================================
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:
@@ -566,12 +690,15 @@ jobs:
           path: ${{ steps.wheel.outputs.file }}
           retention-days: 30
 
-      # -------------------------------------------------
-      # GitHub Release
-      # Only reached if all import/ABI checks succeeded
-      # -------------------------------------------------
+
+      # =================================================
+      # Create Release
+      #
+      # Only reached if ALL validation passed
+      # =================================================
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
+
         with:
           tag_name: >-
             sageattention-v${{
@@ -581,35 +708,42 @@ jobs:
           name: >-
             SageAttention ${{
             inputs.sageattention_version
-            }} - Py3.14.6 / Torch2.13 / CUDA13.0 / sm86
+            }} / Python 3.14.6 /
+            Torch 2.13 cu130 / sm86
 
           body: |
-            SageAttention wheel built for RTX 3080 Ti / sm86.
+            SageAttention wheel for RTX 3080 Ti / sm86.
 
-            Environment:
+            Build environment:
 
             - Python: 3.14.6
             - PyTorch: 2.13.0+cu130
             - PyTorch git:
               cf30153c4c131c8164ee7798e5022d810682e2cb
-            - PyTorch CXX11 ABI: True
+            - CXX11 ABI: True
             - CUDA Toolkit / nvcc: 13.0
-            - Triton: 3.7.1
-            - CUDA architecture: 8.6 / sm86
+            - Triton: provided automatically by PyTorch
+            - Expected Triton: 3.7.1
+            - CUDA architecture: sm86 / RTX 3080 Ti
             - SageAttention:
               ${{ inputs.sageattention_version }}
 
             The workflow verifies:
 
-            - exact Torch build
-            - exact CUDA compiler version
-            - exact Triton version
+            - Python version
+            - exact Torch version
+            - exact Torch git commit
+            - Torch CUDA version
             - CXX11 ABI
-            - wheel native modules
-            - ELF dependencies
-            - RPATH / RUNPATH
+            - nvcc CUDA version
+            - Triton installed by Torch
+            - triton.language import
+            - no accidental top-level SageAttention Triton
             - _fused.so import
             - sageattn import
+            - ELF dependencies
+            - RPATH / RUNPATH
+            - sm86 Triton dispatch
 
             Installation:
 
