@@ -312,6 +312,17 @@ jobs:
       # -------------------------------------------------
       # Build SageAttention wheel
       # -------------------------------------------------
+      - name: Remove bundled SageAttention Triton
+        run: |
+          cd SageAttention
+      
+          echo "Before:"
+          find sageattention -maxdepth 2 -type d -name "triton" -print
+      
+          rm -rf sageattention/triton
+      
+          echo "After:"
+          find sageattention -maxdepth 2 -type d -name "triton" -print
       - name: Build SageAttention wheel
         env:
           CUDA_HOME: /usr/local/cuda-13.0
